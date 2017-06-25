@@ -3,7 +3,7 @@
 
 package main
 
-import "gcp-reports/cmd"
+import "github.com/mhlo/gcp-reports/cmd"
 
 func main() {
 	cmd.Execute()

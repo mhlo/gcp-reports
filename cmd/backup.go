@@ -18,24 +18,6 @@ import (
 	"google.golang.org/api/storage/v1"
 )
 
-type reportBucket struct {
-	gcpBucket  *storage.Bucket
-	gcpObjects []*storage.Object
-}
-
-type reportSQLInstance struct {
-	gcpSQLInstance *sqladmin.DatabaseInstance
-}
-
-type reportProject struct {
-	gcpProject *cloudresourcemanager.Project
-
-	component     string
-	env           string
-	backupBuckets []*reportBucket
-	sqlInstances  []*reportSQLInstance
-}
-
 var (
 	env            string
 	backup         string
@@ -96,12 +78,7 @@ the 'within' option (default is 24h).
 			log.Fatalln("cannot create an sql admin service:", saErr)
 		}
 
-		filteredProjectList := filterProjects(projects.Projects, args, envFilter)
-		ourProjects := []*reportProject{}
-		for _, p := range filteredProjectList {
-			ourProject := &reportProject{gcpProject: p, component: p.Labels[*componentKey], env: p.Labels[*envKey]}
-			ourProjects = append(ourProjects, ourProject)
-		}
+		ourProjects := filterProjects(projects.Projects, args, envFilter)
 
 		// we now have a list of projects that should have backups (unless squashed)
 		for _, project := range ourProjects {
