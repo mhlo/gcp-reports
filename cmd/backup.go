@@ -27,7 +27,7 @@ var (
 
 // backupCmd represents the backup command
 var backupCmd = &cobra.Command{
-	Use:   "backup",
+	Use:   "backups",
 	Short: "report on backups in various environments",
 	Long: `Report on the state of various storage technologies in Google Cloud
 for all projects, from the authenticated user/account point-of-view.
@@ -113,13 +113,13 @@ func (project *reportProject) IngestStorageInfo(ctx context.Context, storageServ
 			project.backupBuckets = append(project.backupBuckets, bucket)
 			updateTime, utErr := time.Parse(time.RFC3339, gcpBucket.Updated)
 			if utErr != nil || time.Since(updateTime) > withinDuration {
-				fmt.Printf("  backup bucket[%s] has not been backed up since %s\n", gcpBucket.Id, gcpBucket.Updated)
+				fmt.Printf("  backup bucket[%s] has not been modified since %s\n", gcpBucket.Id, gcpBucket.Updated)
 			} else {
-				fmt.Printf("  backup bucket[%s] backed up %v ago\n", gcpBucket.Id, time.Since(updateTime))
+				fmt.Printf("  backup bucket[%s] modified %v ago\n", gcpBucket.Id, time.Since(updateTime))
 				continue
 			}
 
-			fmt.Println("bucket:", gcpBucket.Id, gcpBucket.Kind, gcpBucket.Labels)
+			// fmt.Println("  bucket:", gcpBucket.Id, gcpBucket.Kind, gcpBucket.Labels)
 			objResponse, objErr := storageService.Objects.List(gcpBucket.Id).Do()
 			if objErr != nil {
 				fmt.Printf("  bad object get on bucket[%s]: %s\n", gcpBucket.Id, objErr)
@@ -137,7 +137,7 @@ func (project *reportProject) IngestStorageInfo(ctx context.Context, storageServ
 				}
 			}
 			if len(objResponse.Items) == 0 {
-				fmt.Println("    no backup listings seen!")
+				fmt.Println("    no backup listings seen for this bucket")
 			}
 		}
 	} else {

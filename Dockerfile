@@ -1,9 +1,6 @@
 from golang:1.8
 
-WORKDIR /go/src/app
-COPY . .
 
-RUN go-wrapper download   # "go get -d -v ./..."
-RUN go-wrapper install    # "go install -v ./..."
-
-CMD ["go-wrapper", "run"] # ["app"]
+ADD . /go/src/github.com/mhlo/gcp-reports
+RUN go install github.com/mhlo/gcp-reports
+ENTRYPOINT ["/go/bin/gcp-reports"]

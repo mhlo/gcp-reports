@@ -125,16 +125,25 @@ func (app *reportApplication) Ingest(taker Taker) error {
 	if services, svcErr := taker.ListServices(app); svcErr != nil {
 		return svcErr
 	} else {
+		doneChan := make(chan string)
 		for _, service := range services {
 			// fmt.Println("ingest service:", app.gcpApplication.Id+"."+service.Id)
 			repService := &reportService{gcpService: service, application: app}
 			app.services = append(app.services, repService)
-			repService.Ingest(taker)
+			go func(service *reportService) {
+				repService.Ingest(taker)
+				doneChan <- repService.application.gcpApplication.Id + "." + service.gcpService.Id
+			}(repService)
+		}
+		for range services {
+			rs := <-doneChan
+			fmt.Println("report service version done:", rs)
 		}
 	}
 	return nil
 }
 
+// ListVersionInstances returns a list of instances running at a particular version
 func (taker *TakerGCP) ListVersionInstances(rv *reportVersion) (instances []*appengine.Instance, err error) {
 	versionsService := appengine.NewAppsServicesVersionsService(taker.appEngine)
 	if instancesResponse, instanceErr := versionsService.Instances.List(rv.service.application.gcpApplication.Id, rv.service.gcpService.Id, rv.gcpVersion.Id).Do(); instanceErr == nil {
@@ -167,6 +176,7 @@ func (taker *TakerGCP) ListVersions(rs *reportService) (versions []*appengine.Ve
 	return
 }
 
+// Ingest takes information 'taken' from the service providing the Google APIs
 func (svc *reportService) Ingest(taker Taker) error {
 	versions, versionErr := taker.ListVersions(svc)
 	if versionErr != nil {
@@ -188,6 +198,12 @@ func (svc *reportService) Ingest(taker Taker) error {
 			doneChan <- version.service.gcpService.Id + "." + version.gcpVersion.Id
 		}(version)
 	}
+
+	for i := len(shortVersions) - 1; i >= 0; i-- {
+		sv := <-doneChan
+		fmt.Println("report service version done:", sv)
+	}
+
 	return nil
 }
 
@@ -214,7 +230,7 @@ func (rs *reportService) Display() {
 			fmt.Printf("      url[%s]\n", gcpVersion.VersionUrl)
 			fmt.Printf("      env-vars[%v]\n", gcpVersion.EnvVariables)
 			if gcpVersion.BasicScaling != nil {
-				fmt.Printf("      basic-scaling max[%4d] idle-timeout[%6d]",
+				fmt.Printf("      basic-scaling max[%4d] idle-timeout[%6s]",
 					gcpVersion.BasicScaling.MaxInstances, gcpVersion.BasicScaling.IdleTimeout)
 			}
 			if gcpVersion.AutomaticScaling != nil {
@@ -239,6 +255,7 @@ func (p *reportProject) Display() {
 	}
 }
 
+// Display sends appropriate output the console
 func (app *reportApplication) Display() {
 	fmt.Printf("application[%30s]: status[%s]\n", app.gcpApplication.Id, app.gcpApplication.ServingStatus)
 	for _, dispatchRule := range app.gcpApplication.DispatchRules {
