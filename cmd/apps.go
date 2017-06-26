@@ -72,9 +72,9 @@ Applications with the 'component' label matching 'our-foo' will be listed.
 		for _, project := range ourProjects {
 			fmt.Println("project pre:", project.gcpProject.ProjectId)
 			go func(project *reportProject) {
-				project.Ingest(taker)
+				ingestErr := project.Ingest(taker)
 				doneChan <- project.gcpProject.ProjectId
-				fmt.Println("project inside done:", project.gcpProject.ProjectId)
+				fmt.Println("project inside done:", project.gcpProject.ProjectId, ingestErr)
 			}(project)
 		}
 		for _ = range ourProjects {

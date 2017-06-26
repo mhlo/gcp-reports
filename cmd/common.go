@@ -111,8 +111,8 @@ type TakerGCP struct {
 	appEngine  *appengine.APIService
 }
 
-func (tg *TakerGCP) ListServices(ra *reportApplication) (services []*appengine.Service, err error) {
-	servicesService := appengine.NewAppsServicesService(tg.appEngine)
+func (taker *TakerGCP) ListServices(ra *reportApplication) (services []*appengine.Service, err error) {
+	servicesService := appengine.NewAppsServicesService(taker.appEngine)
 	serviceResponse, serr := servicesService.List(ra.gcpApplication.Id).Do()
 	if err == nil {
 		services = serviceResponse.Services
@@ -135,8 +135,8 @@ func (app *reportApplication) Ingest(taker Taker) error {
 	return nil
 }
 
-func (tg *TakerGCP) ListVersionInstances(rv *reportVersion) (instances []*appengine.Instance, err error) {
-	versionsService := appengine.NewAppsServicesVersionsService(tg.appEngine)
+func (taker *TakerGCP) ListVersionInstances(rv *reportVersion) (instances []*appengine.Instance, err error) {
+	versionsService := appengine.NewAppsServicesVersionsService(taker.appEngine)
 	if instancesResponse, instanceErr := versionsService.Instances.List(rv.service.application.gcpApplication.Id, rv.service.gcpService.Id, rv.gcpVersion.Id).Do(); instanceErr == nil {
 		instances = instancesResponse.Instances
 	} else {
@@ -234,7 +234,9 @@ func (rs *reportService) Display() {
 }
 
 func (p *reportProject) Display() {
-	p.application.Display()
+	if p.application != nil {
+		p.application.Display()
+	}
 }
 
 func (app *reportApplication) Display() {
@@ -247,6 +249,7 @@ func (app *reportApplication) Display() {
 	}
 }
 
+// GetApplication finds (maybe) an App Engine application associated with the project
 func (taker *TakerGCP) GetApplication(rp *reportProject) (application *appengine.Application, err error) {
 	getResponse, getErr := taker.appEngine.Apps.Get(rp.gcpProject.ProjectId).Do()
 	if getErr != nil {
@@ -264,7 +267,7 @@ func (p *reportProject) Ingest(taker Taker) error {
 		//				log.Println("cannot get application for project:", appErr)
 		return appErr
 	}
-	p.application = &reportApplication{gcpApplication: application}
+	p.application = &reportApplication{gcpApplication: application, project: p}
 	if siErr := p.application.Ingest(taker); siErr != nil {
 		return siErr
 	}
