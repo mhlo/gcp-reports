@@ -5,6 +5,9 @@ package cmd
 
 import (
 	"fmt"
+	"regexp"
+	"sort"
+	"time"
 
 	"github.com/spf13/viper"
 	"google.golang.org/api/appengine/v1"
@@ -22,14 +25,27 @@ type Taker interface {
 	// ListBuckets(*reportBucket)
 }
 
+type TakerSQLAdmin interface {
+	ListSQLInstances(*reportProject) ([]*sqladmin.DatabaseInstance, error)
+	ListBackupRuns(*reportProject, *reportSQLInstance) ([]*sqladmin.BackupRun, error)
+}
+
+type TakerStorage interface {
+	ListBuckets(*reportProject) ([]*storage.Bucket, error)
+	ListObjects(*reportBucket) ([]*storage.Object, error)
+}
+
 type reportNode interface {
 	Parent() reportNode
 	Ingest(Taker) error
 }
 
 type reportBucket struct {
+	isBackup   bool
 	gcpBucket  *storage.Bucket
 	gcpObjects []*storage.Object
+	objects    []*reportObject
+	kindMap    map[string][]*reportObject
 
 	project *reportProject
 }
@@ -40,8 +56,13 @@ func (rb *reportBucket) Parent() reportNode {
 
 type reportSQLInstance struct {
 	gcpSQLInstance *sqladmin.DatabaseInstance
+	backupRuns     []*reportBackupRun
 
 	project *reportProject // parent
+}
+
+type reportBackupRun struct {
+	gcpBackupRun *sqladmin.BackupRun
 }
 
 func (rdb *reportSQLInstance) Parent() reportNode {
@@ -111,6 +132,15 @@ type TakerGCP struct {
 	appEngine  *appengine.APIService
 }
 
+type TakerStorageGCP struct {
+	storageService *storage.Service
+}
+
+type TakerSQLAdminGCP struct {
+	sqladminService *sqladmin.Service
+}
+
+// ListServices takes GCP-provided data about services provided by an application
 func (taker *TakerGCP) ListServices(ra *reportApplication) (services []*appengine.Service, err error) {
 	servicesService := appengine.NewAppsServicesService(taker.appEngine)
 	serviceResponse, serr := servicesService.List(ra.gcpApplication.Id).Do()
@@ -289,6 +319,185 @@ func (p *reportProject) Ingest(taker Taker) error {
 		return siErr
 	}
 
+	return nil
+}
+
+func (taker TakerStorageGCP) ListObjects(bucket *reportBucket) (gcpObjects []*storage.Object, err error) {
+	if objResponse, objErr := taker.storageService.Objects.List(bucket.gcpBucket.Id).Do(); objErr == nil {
+		gcpObjects = objResponse.Items
+	} else {
+		err = objErr
+	}
+	return
+}
+
+type reportObject struct {
+	gcpObject  *storage.Object
+	updateTime time.Time
+	kind       string
+}
+
+var objectDatastoreKindRegex = regexp.MustCompile("\\.([^.]+)\\.backup_info")
+
+func (o *reportObject) DatastoreGleanMeta() {
+	// organise an object map by 'kind', and then have a reverse-chronological listing of backups for that kind.
+	matches := objectDatastoreKindRegex.FindStringSubmatch(o.gcpObject.Id)
+	if len(matches) == 2 {
+		o.kind = matches[1]
+	}
+}
+
+type objectSlice []*reportObject
+
+func (o objectSlice) Len() int {
+	return len(o)
+}
+
+func (o objectSlice) Less(i, j int) bool {
+	return o[i].updateTime.After(o[j].updateTime)
+}
+
+func (o objectSlice) Swap(i, j int) {
+	o[i], o[j] = o[j], o[i]
+}
+
+// UpdateKindMap updates (re-establishes) the map of kind(name): list of objects of same kind
+func (rb *reportBucket) UpdateKindMap() {
+	oSlice := objectSlice(rb.objects)
+	sort.Sort(oSlice)
+	kindMap := make(map[string][]*reportObject)
+	for _, object := range rb.objects {
+		if object.kind == "" {
+			continue
+		}
+		kindMap[object.kind] = append(kindMap[object.kind], object)
+	}
+	rb.kindMap = kindMap
+}
+
+func ellipsize(s string, lhs int, rhs int) string {
+	sz := len(s)
+	if sz < (lhs + rhs + 3) {
+		return s
+	}
+	return s[0:lhs] + "..." + s[sz-rhs:]
+}
+
+// IngestObjects takes in all objects in a GCS bucket
+func (rb *reportBucket) IngestObjects(taker TakerStorage) (ingestErr error) {
+	gcpObjects, listObjErr := taker.ListObjects(rb)
+	if listObjErr != nil {
+		ingestErr = listObjErr
+		return
+	}
+	fmt.Printf("bucket %s has %d objects\n", rb.gcpBucket.Id, len(gcpObjects))
+	for _, gcpObject := range gcpObjects {
+		updateTime, utErr := time.Parse(time.RFC3339, gcpObject.Updated)
+		if utErr != nil {
+			fmt.Println("cannot parse date:", utErr)
+		}
+		object := &reportObject{gcpObject: gcpObject, updateTime: updateTime}
+		object.DatastoreGleanMeta()
+		rb.objects = append(rb.objects, object)
+	}
+
+	rb.UpdateKindMap()
+	if verbose {
+		for kind, objectSlice := range rb.kindMap {
+			fmt.Printf("    kind[%s] most recently updated object[%s] at [%s], size[%d]\n", kind,
+				ellipsize(objectSlice[0].gcpObject.Id, 8, 12), objectSlice[0].updateTime, objectSlice[0].gcpObject.Size)
+		}
+	}
+	return
+}
+
+func (taker TakerStorageGCP) ListBuckets(project *reportProject) (gcpBuckets []*storage.Bucket, err error) {
+	if objResponse, objErr := taker.storageService.Buckets.List(project.gcpProject.ProjectId).Do(); objErr == nil {
+		gcpBuckets = objResponse.Items
+	} else {
+		err = objErr
+	}
+	return
+}
+
+func (p *reportProject) IngestStorage(taker TakerStorage) (ingestErr error) {
+	gcpBuckets, listErr := taker.ListBuckets(p)
+	if listErr == nil {
+		for _, gcpBucket := range gcpBuckets {
+			isBackup := false
+			if gcpBucket.Labels[*backupKey] == "true" {
+				isBackup = true
+			}
+			bucket := &reportBucket{gcpBucket: gcpBucket, isBackup: isBackup}
+			p.backupBuckets = append(p.backupBuckets, bucket)
+			updateTime, utErr := time.Parse(time.RFC3339, gcpBucket.Updated)
+			if isBackup {
+				if utErr != nil || time.Since(updateTime) > withinDuration {
+					fmt.Printf("  backup bucket[%s] has not been modified since %s\n", gcpBucket.Id, gcpBucket.Updated)
+				} else {
+					fmt.Printf("  backup bucket[%s] modified %v ago\n", gcpBucket.Id, time.Since(updateTime))
+					continue
+				}
+			}
+
+			ingestErr = bucket.IngestObjects(taker)
+		}
+	} else {
+		ingestErr = listErr
+	}
+	return
+}
+
+// ListSQLInstances lists out the SQL instances associated with the given project
+func (taker TakerSQLAdminGCP) ListSQLInstances(project *reportProject) (gcpInstances []*sqladmin.DatabaseInstance, err error) {
+	sqlInstanceResponse, silErr := taker.sqladminService.Instances.List(project.gcpProject.ProjectId).Do()
+	if silErr == nil {
+		gcpInstances = sqlInstanceResponse.Items
+	}
+	err = silErr
+	return
+}
+
+// ListBackupRuns gathers any listed backup-runs for the given SQL Instance
+func (taker *TakerSQLAdminGCP) ListBackupRuns(project *reportProject, dbi *reportSQLInstance) (gcpRuns []*sqladmin.BackupRun, err error) {
+	backupResponse, backupErr := taker.sqladminService.BackupRuns.List(project.gcpProject.ProjectId, dbi.gcpSQLInstance.Name).Do()
+	if backupErr == nil {
+		gcpRuns = backupResponse.Items
+	}
+	err = backupErr
+	return
+}
+
+// IngestSQLInstances ingests all the SQL instances for this project
+func (p *reportProject) IngestSQLInstances(taker TakerSQLAdmin) error {
+	gcpInstances, listErr := taker.ListSQLInstances(p)
+	if listErr != nil {
+		return listErr
+	}
+	for _, gcpInstance := range gcpInstances {
+		instance := &reportSQLInstance{gcpSQLInstance: gcpInstance}
+		p.sqlInstances = append(p.sqlInstances, instance)
+		fmt.Printf("  sql instance[%s] has backup enabled[%t]\n", gcpInstance.Name, gcpInstance.Settings.BackupConfiguration.Enabled)
+		if gcpInstance.Settings.BackupConfiguration.Enabled {
+			gcpBackups, backupErr := taker.ListBackupRuns(p, instance)
+			if backupErr != nil {
+				fmt.Printf("  cannot get list of backup runs for instance[%s]: %v", gcpInstance.Name, backupErr)
+				continue
+			}
+			for _, gcpBackup := range gcpBackups {
+				backup := &reportBackupRun{gcpBackupRun: gcpBackup}
+				instance.backupRuns = append(instance.backupRuns, backup)
+			}
+			maxRuns := 3
+			if maxRuns >= len(gcpBackups) {
+				maxRuns = len(gcpBackups)
+			}
+			for index, backupRun := range instance.backupRuns[0:maxRuns] {
+				fmt.Printf("    backup [%2d]: enqueued[%16s] start[%16s] end[%16s]\n",
+					index, backupRun.gcpBackupRun.EnqueuedTime, backupRun.gcpBackupRun.StartTime, backupRun.gcpBackupRun.EndTime)
+			}
+		}
+	}
 	return nil
 }
 

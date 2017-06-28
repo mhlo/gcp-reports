@@ -4,7 +4,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"time"
@@ -73,104 +72,37 @@ the 'within' option (default is 24h).
 			log.Fatalln("cannot list projects at Google Cloud:", projErr)
 		}
 
-		sqlAdminService, saErr := sqladmin.New(client)
+		sqladminService, saErr := sqladmin.New(client)
 		if saErr != nil {
 			log.Fatalln("cannot create an sql admin service:", saErr)
 		}
 
+		storageService, storageErr := storage.New(client)
+		// get GCS buckets that belong to project to see if any marked as backup
+		if storageErr != nil {
+			log.Fatalln("cannot use storage API successfully:", storageErr)
+		}
+
+		storageTaker := &TakerStorageGCP{
+			storageService: storageService,
+		}
+		sqladminTaker := &TakerSQLAdminGCP{
+			sqladminService: sqladminService,
+		}
 		ourProjects := filterProjects(projects.Projects, args, envFilter)
 
-		// we now have a list of projects that should have backups (unless squashed)
+		// we now have a list of (filtered) projects that should have backups
 		for _, project := range ourProjects {
 			fmt.Printf("project ID[%32s]: env[%8s], component[%28s]\n",
 				project.gcpProject.ProjectId, project.env, project.component)
 
-			// get GCS buckets that belong to project to see if any marked as backup
-			storageService, storageErr := storage.New(client)
-			if storageErr == nil {
-				storageErr = project.IngestStorageInfo(ctx, storageService)
-			}
-			if storageErr != nil {
-				log.Fatalln("cannot use storage API successfully:", storageErr)
-			}
-
-			sqlErr := project.IngestSQLInstances(ctx, sqlAdminService)
-			if sqlErr != nil {
-				log.Fatalln("cannot use SQL-admin API successfully:", sqlErr)
+			storageErr = project.IngestStorage(storageTaker)
+			sqlErr := project.IngestSQLInstances(sqladminTaker)
+			if storageErr != nil || sqlErr != nil {
+				log.Fatalln("at least some GCP info cannot be ingested:", sqlErr, storageErr)
 			}
 		}
 	},
-}
-
-func (project *reportProject) IngestStorageInfo(ctx context.Context, storageService *storage.Service) error {
-	bucketService := storage.NewBucketsService(storageService)
-	if listResponse, err := bucketService.List(project.gcpProject.ProjectId).Do(); err == nil {
-		for _, gcpBucket := range listResponse.Items {
-			if gcpBucket.Labels[backup] == "" {
-				continue
-			}
-			bucket := &reportBucket{gcpBucket: gcpBucket}
-			project.backupBuckets = append(project.backupBuckets, bucket)
-			updateTime, utErr := time.Parse(time.RFC3339, gcpBucket.Updated)
-			if utErr != nil || time.Since(updateTime) > withinDuration {
-				fmt.Printf("  backup bucket[%s] has not been modified since %s\n", gcpBucket.Id, gcpBucket.Updated)
-			} else {
-				fmt.Printf("  backup bucket[%s] modified %v ago\n", gcpBucket.Id, time.Since(updateTime))
-				continue
-			}
-
-			// fmt.Println("  bucket:", gcpBucket.Id, gcpBucket.Kind, gcpBucket.Labels)
-			objResponse, objErr := storageService.Objects.List(gcpBucket.Id).Do()
-			if objErr != nil {
-				fmt.Printf("  bad object get on bucket[%s]: %s\n", gcpBucket.Id, objErr)
-				continue
-			}
-			bucket.gcpObjects = objResponse.Items
-			if verbose {
-				for _, object := range objResponse.Items {
-					updateTime, utErr := time.Parse(time.RFC3339, object.Updated)
-					if utErr != nil {
-						fmt.Println("cannot parse date:", utErr)
-						continue
-					}
-					fmt.Printf("    object[]%s] at [%s], size[%d]\n", object.Name, updateTime, object.Size)
-				}
-			}
-			if len(objResponse.Items) == 0 {
-				fmt.Println("    no backup listings seen for this bucket")
-			}
-		}
-	} else {
-		return err
-	}
-	return nil
-}
-
-func (project *reportProject) IngestSQLInstances(ctx context.Context, sqlAdminService *sqladmin.Service) error {
-	sqlInstanceResponse, silErr := sqlAdminService.Instances.List(project.gcpProject.ProjectId).Do()
-	if silErr != nil {
-		return silErr
-	}
-	for _, gcpInstance := range sqlInstanceResponse.Items {
-		instance := &reportSQLInstance{gcpSQLInstance: gcpInstance}
-		project.sqlInstances = append(project.sqlInstances, instance)
-		fmt.Printf("  sql instance[%s] has backup enabled[%t]\n", gcpInstance.Name, gcpInstance.Settings.BackupConfiguration.Enabled)
-		if gcpInstance.Settings.BackupConfiguration.Enabled {
-			backupResponse, backupErr := sqlAdminService.BackupRuns.List(project.gcpProject.ProjectId, gcpInstance.Name).Do()
-			if backupErr != nil {
-				fmt.Printf("  cannot get list of backup runs for instance[%s]: %v", gcpInstance.Name, backupErr)
-				continue
-			}
-			maxRuns := 3
-			if maxRuns >= len(backupResponse.Items) {
-				maxRuns = len(backupResponse.Items)
-			}
-			for index, backupRun := range backupResponse.Items[0:maxRuns] {
-				fmt.Printf("    backup [%2d]: enqueued[%16s] start[%16s] end[%16s]\n", index, backupRun.EnqueuedTime, backupRun.StartTime, backupRun.EndTime)
-			}
-		}
-	}
-	return nil
 }
 
 var (

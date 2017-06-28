@@ -23,7 +23,17 @@ Note that this is built from an official Docker hub image, with all the security
 
 ## Running
 
-`gcp-reports --help` should get you going. The '-v' option emits more output; be careful if you have very historied project or lots of them.
+`gcp-reports --help` should get you going. The '-v' option emits more output; be careful if you have very historied project or lots of them. A couple examples:
+
+```
+gcp-reports apps foo bar
+```
+Produces information about all App Engine applications which have a component label of either 'foo' or 'bar'.
+
+```
+gcp-reports --env-filter=dev backups
+```
+Produces information about backups for all the applications which are in the 'dev' environment.
 
 ### Docker image
 
@@ -31,7 +41,7 @@ Running the docker image is the same, except for two things:
 
  * usual Docker stuff: `docker run ...`
 
- * the Google Cloud credentials are not available within the Docker container.
+ * the Google Cloud application-default credentials are not available within the Docker container.
 
  The following incantation addresses both of these concerns:
 
