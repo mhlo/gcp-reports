@@ -82,6 +82,7 @@ func (rvi *reportVersionInstance) Parent() reportNode {
 type reportVersion struct {
 	gcpVersion *appengine.Version
 	instances  []*reportVersionInstance
+	deployTime time.Time
 
 	service *reportService // parent
 }
@@ -166,8 +167,7 @@ func (app *reportApplication) Ingest(taker Taker) error {
 			}(repService)
 		}
 		for range services {
-			rs := <-doneChan
-			fmt.Println("report service version done:", rs)
+			_ = <-doneChan
 		}
 	}
 	return nil
@@ -196,9 +196,10 @@ func (rv *reportVersion) Ingest(taker Taker) error {
 	return nil
 }
 
+// ListVersions will take in all existing versions of the service in full detail.
 func (taker *TakerGCP) ListVersions(rs *reportService) (versions []*appengine.Version, err error) {
 	serviceService := appengine.NewAppsServicesVersionsService(taker.appEngine)
-	if listResponse, listErr := serviceService.List(rs.application.gcpApplication.Id, rs.gcpService.Id).Do(); listErr == nil {
+	if listResponse, listErr := serviceService.List(rs.application.gcpApplication.Id, rs.gcpService.Id).View("FULL").Do(); listErr == nil {
 		versions = listResponse.Versions
 	} else {
 		err = listErr
@@ -227,29 +228,50 @@ func (svc *reportService) Ingest(taker Taker) error {
 			version.Ingest(taker)
 			doneChan <- version.service.gcpService.Id + "." + version.gcpVersion.Id
 		}(version)
+
+		deployTime, utErr := time.Parse(time.RFC3339, gcpVersion.CreateTime)
+		if utErr != nil {
+			fmt.Println("cannot parse date:", utErr)
+		}
+
+		version.deployTime = deployTime
+
 	}
 
 	for i := len(shortVersions) - 1; i >= 0; i-- {
-		sv := <-doneChan
-		fmt.Println("report service version done:", sv)
+		_ = <-doneChan
 	}
 
 	return nil
 }
 
+type versionSlice []*reportVersion
+
+func (o versionSlice) Len() int {
+	return len(o)
+}
+
+func (o versionSlice) Less(i, j int) bool {
+	return o[i].deployTime.After(o[j].deployTime)
+}
+
+func (o versionSlice) Swap(i, j int) {
+	o[i], o[j] = o[j], o[i]
+}
+
 func (rs *reportService) Display() {
 	fmt.Printf("  service[%18s], shard strat[%s]\n", rs.gcpService.Id, rs.gcpService.Split.ShardBy)
 
-	limit := max(0, len(rs.versions)-2)
-	if limit > 0 {
-		if verbose {
-			limit = 0
-		} else {
-			fmt.Println("    ...earlier versions elided...")
-		}
+	limit := max(1, len(rs.versions)-2)
+
+	if verbose {
+		limit = len(rs.versions)
+	} else if limit > 2 {
+		limit = 3
+		fmt.Println("    ...earlier versions elided...")
 	}
 
-	for _, version := range rs.versions[limit:len(rs.versions)] {
+	for _, version := range rs.versions[0:limit] {
 		gcpVersion := version.gcpVersion
 		env := supplyDefault(version.gcpVersion.Env, "standard")
 		numInstances := len(version.instances)
@@ -257,6 +279,7 @@ func (rs *reportService) Display() {
 		fmt.Printf("    version[%16s] runtime[%10s] env[%7s] serving[%12s] instances[%4d]\n",
 			gcpVersion.Id, gcpVersion.Runtime, env, gcpVersion.ServingStatus, numInstances)
 		if verbose {
+			fmt.Printf("      deployed by[%s] at [%s]", gcpVersion.CreatedBy, gcpVersion.CreateTime)
 			fmt.Printf("      url[%s]\n", gcpVersion.VersionUrl)
 			fmt.Printf("      env-vars[%v]\n", gcpVersion.EnvVariables)
 			if gcpVersion.BasicScaling != nil {
@@ -274,7 +297,7 @@ func (rs *reportService) Display() {
 		}
 		for _, handler := range gcpVersion.Handlers {
 			fmt.Printf("      handler: URL regex[%26s], scriptpath[%s]\n",
-				handler.UrlRegex, handler.ApiEndpoint.ScriptPath)
+				handler.UrlRegex, handler.Script.ScriptPath)
 		}
 	}
 }
@@ -402,15 +425,14 @@ func (rb *reportBucket) IngestObjects(taker TakerStorage) (ingestErr error) {
 	}
 
 	rb.UpdateKindMap()
-	if verbose {
-		for kind, objectSlice := range rb.kindMap {
-			fmt.Printf("    kind[%s] most recently updated object[%s] at [%s], size[%d]\n", kind,
-				ellipsize(objectSlice[0].gcpObject.Id, 8, 12), objectSlice[0].updateTime, objectSlice[0].gcpObject.Size)
-		}
+	for kind, objectSlice := range rb.kindMap {
+		fmt.Printf("    kind[%s] most recently updated object[%s] at [%s], size[%d]\n", kind,
+			ellipsize(objectSlice[0].gcpObject.Id, 8, 12), objectSlice[0].updateTime, objectSlice[0].gcpObject.Size)
 	}
 	return
 }
 
+// ListBuckets queries actual GCP to get buckets for a project
 func (taker TakerStorageGCP) ListBuckets(project *reportProject) (gcpBuckets []*storage.Bucket, err error) {
 	if objResponse, objErr := taker.storageService.Buckets.List(project.gcpProject.ProjectId).Do(); objErr == nil {
 		gcpBuckets = objResponse.Items
@@ -430,17 +452,10 @@ func (p *reportProject) IngestStorage(taker TakerStorage) (ingestErr error) {
 			}
 			bucket := &reportBucket{gcpBucket: gcpBucket, isBackup: isBackup}
 			p.backupBuckets = append(p.backupBuckets, bucket)
-			updateTime, utErr := time.Parse(time.RFC3339, gcpBucket.Updated)
 			if isBackup {
-				if utErr != nil || time.Since(updateTime) > withinDuration {
-					fmt.Printf("  backup bucket[%s] has not been modified since %s\n", gcpBucket.Id, gcpBucket.Updated)
-				} else {
-					fmt.Printf("  backup bucket[%s] modified %v ago\n", gcpBucket.Id, time.Since(updateTime))
-					continue
-				}
+				ingestErr = bucket.IngestObjects(taker)
 			}
 
-			ingestErr = bucket.IngestObjects(taker)
 		}
 	} else {
 		ingestErr = listErr

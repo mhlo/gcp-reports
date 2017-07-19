@@ -100,7 +100,7 @@ func init() {
 
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
-	appsCmd.Flags().Int("version-limit", 3, "How many versions (most recent) to be gathered")
+	appsCmd.Flags().Int("version-limit", 3000, "How many versions (most recent) to be gathered")
 	viper.BindPFlag("versionLimit", appsCmd.Flags().Lookup("version-limit"))
 
 }

@@ -99,7 +99,7 @@ the 'within' option (default is 24h).
 			storageErr = project.IngestStorage(storageTaker)
 			sqlErr := project.IngestSQLInstances(sqladminTaker)
 			if storageErr != nil || sqlErr != nil {
-				log.Fatalln("at least some GCP info cannot be ingested:", sqlErr, storageErr)
+				log.Println("at least some GCP info cannot be ingested:", sqlErr, storageErr)
 			}
 		}
 	},
