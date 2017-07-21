@@ -275,9 +275,18 @@ func (rs *reportService) Display() {
 		gcpVersion := version.gcpVersion
 		env := supplyDefault(version.gcpVersion.Env, "standard")
 		numInstances := len(version.instances)
+		network := &appengine.Network{Name: "<default>", SubnetworkName: ""}
+		if gcpVersion.Network != nil {
+			network = gcpVersion.Network
+		}
 
-		fmt.Printf("    version[%16s] runtime[%10s] env[%7s] serving[%12s] instances[%4d]\n",
+		fmt.Printf("    version[%16s] runtime[%10s] env[%7s] serving[%12s] instances[%4d]",
 			gcpVersion.Id, gcpVersion.Runtime, env, gcpVersion.ServingStatus, numInstances)
+		if env == "flexible" {
+			fmt.Printf(" net[%16s/%16s] ports[%v]\n", network.Name, network.SubnetworkName, network.ForwardedPorts)
+		} else {
+			fmt.Printf("\n")
+		}
 		if verbose {
 			fmt.Printf("      deployed by[%s] at [%s]", gcpVersion.CreatedBy, gcpVersion.CreateTime)
 			fmt.Printf("      url[%s]\n", gcpVersion.VersionUrl)
