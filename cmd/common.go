@@ -260,6 +260,10 @@ func (o versionSlice) Swap(i, j int) {
 }
 
 func (rs *reportService) Display() {
+	allocs := ""
+	for v, f := range rs.gcpService.Split.Allocations {
+		allocs += fmt.Sprintf("%s=%2d", v, int(f*100.0))
+	}
 	fmt.Printf("  service[%18s], shard strat[%s]\n", rs.gcpService.Id, rs.gcpService.Split.ShardBy)
 
 	limit := max(1, len(rs.versions)-2)
@@ -280,8 +284,8 @@ func (rs *reportService) Display() {
 			network = gcpVersion.Network
 		}
 
-		fmt.Printf("    version[%16s] runtime[%10s] env[%7s] serving[%12s] instances[%4d]",
-			gcpVersion.Id, gcpVersion.Runtime, env, gcpVersion.ServingStatus, numInstances)
+		fmt.Printf("    version[%16s] runtime[%10s] env[%7s] serving[%12s] instances[%4d] split[%2.0f]",
+			gcpVersion.Id, gcpVersion.Runtime, env, gcpVersion.ServingStatus, numInstances, rs.gcpService.Split.Allocations[gcpVersion.Id]*100.0)
 		if env == "flexible" {
 			fmt.Printf(" net[%16s/%16s] ports[%v]\n", network.Name, network.SubnetworkName, network.ForwardedPorts)
 		} else {

@@ -48,6 +48,15 @@ Running the docker image is the same, except for two things:
  ```
  docker run --rm -it -v $HOME/.config/gcloud:/root/.config/gcloud gcp-reports --env-filter=dev backups
  ```
+#### Google Container Registry
+
+It is sometimes useful to throw this into your GCR. In this case, do the following after building the image locally:
+
+```
+# you will probably better versioning that 'latest'!
+docker tag gcp-reports:latest gcr.io/YOUR_PROJECT_HERE/gcp-reports
+gcloud docker -- push gcr.io/YOUR_PROJECT_HERE/gcp-reports
+```
 
 ### Labels
 
